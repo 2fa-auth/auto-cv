@@ -1,7 +1,6 @@
 #!/home/client/Documents/fun/venv/bin/python3
 import torch
 import cv2
-import det 
 
 def IoU(bbox1, bbox2):
   box1 = cxcywh_to_xyxy(bbox1)
@@ -64,6 +63,7 @@ def view_image(name_img, img):
   cv2.destroyAllWindows()
 
 def detection_objects(x, y, own_set_frame=False): 
+  import det
   if not own_set_frame:
     x = x.to('cpu')
     x = cv2.cvtColor(x.permute(1, 2, 0).numpy(), cv2.COLOR_RGB2BGR)
