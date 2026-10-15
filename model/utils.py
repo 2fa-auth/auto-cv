@@ -69,6 +69,7 @@ def detection_objects(x, y, own_set_frame=False):
     x = cv2.cvtColor(x.permute(1, 2, 0).numpy(), cv2.COLOR_RGB2BGR)
   
   bboxes = extract_labels(y).to('cpu') # [H_grid, W_grid, preds]
+  if bboxes.numel() == 0: return x 
   bboxes = cxcywh_to_xyxy(bboxes)
   bboxes = denorm_coords(bboxes, det.W_image, det.H_image)
 
@@ -78,7 +79,6 @@ def detection_objects(x, y, own_set_frame=False):
     x_max = int(bbox[2].item()) 
     y_max = int(bbox[3].item()) 
     cv2.rectangle(x, (x_min, y_min), (x_max, y_max), (0, 255, 255), 2)
-
   return x
 
 # сортирует bbox по x1 
