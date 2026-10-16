@@ -23,13 +23,11 @@ class BACKBONEModel(nn.Module):
             nn.Conv2d(64, 128, kernel_size=3, padding=1),
             nn.BatchNorm2d(128),
             nn.LeakyReLU(0.1, inplace=True),
-            nn.MaxPool2d(4, 4), # [B, 28, 28, PRED * NUM_CLASSES] -> [B, 7, 7, PRED * NUM_CLASSES]
+            nn.MaxPool2d(4, 4), # [B, 28, 28, 5*B+C] => [B, 7, 7, 5*B+C]
         )
-
         self.head = nn.Conv2d(128, out_features, kernel_size=1)
 
     def forward(self, x):
         x = self.backbone(x)
         x = self.head(x)
-        x = x.permute(0, 2, 3, 1).contiguous()
-        return x
+        return x.permute(0, 2, 3, 1).contiguous()
