@@ -73,13 +73,6 @@ class BboxLoss_withMSE(nn.Module):
   def forward(self, p, y):
     iou_b1 = get_iou(p[..., :4], y[..., :4])
     iou_b2 = get_iou(p[..., 5:9], y[..., :4])
-
-    # print(f'b1:\n{p[..., :4]}')
-    # print(f'b2:\n{p[..., 5:9]}\n')
-    # print(f'iou_b1:\n{iou_b1}')
-    # print(f'iou_b2:\n{iou_b2}')
-
-    # main_box = torch.zeros((1, 7, 7, 5), device=p.device)
     """
     nomain_box = main_box.detach().clone()
     for b in range(iou_b1.size(0)):
@@ -92,14 +85,12 @@ class BboxLoss_withMSE(nn.Module):
             elif iou_b1[b, s1, s2, v] <= iou_b2[b, s1, s2, v]: 
               main_box[b, s1, s2, :5] = p[b, s1, s2, 5:10] # bbox2 - main
               nomain_box[b, s1, s2, :5] = p[b, s1, s2, :5] # bbox1 - no main
-    #box = torch.where(iou_b1 <= iou_b2, p[..., 5:10], p[..., :5])
     """
     main_box = torch.where(iou_b1 <= iou_b2, p[..., 5:10], p[..., :5])
     nomain_box = torch.where(iou_b1 <= iou_b2, p[..., :5], p[..., 5:10])
 
-    #print(f'main box:\n{main_box}')
-
     mse_loss = nn.MSELoss(reduction='sum')
+
     #XY
     x_loss = mse_loss(
       main_box[..., 0:1], 
@@ -139,11 +130,10 @@ class BboxLoss_withMSE(nn.Module):
     cross = nn.CrossEntropyLoss(reduction='sum')
     class_loss = cross(p[..., 10:config.C], y[..., 10:config.C])
 
-    total = self.l_coord * coord_loss \
+    return self.l_coord * coord_loss \
         + obj_confidence_losse \
         + self.l_nooobj * noobj_confidence_losse \
         + class_loss
-    return total
 
 
 class ModelTrainer(nn.Module):
