@@ -8,7 +8,7 @@ import torch.utils.data as data
 import torchvision.transforms.v2 as v2
 import torch.nn as nn
 
-from utils import denorm_coords, norm_coords, IoU, detection_objects
+from utils import denorm_coords, norm_coords, get_iou, detection_objects
 from backbone import BACKBONEModel
 import config
 
@@ -42,9 +42,9 @@ class SetNoob(data.Dataset):
     w, h = image.size
 
     if self.transforms:
-      bbox = BoundingBoxes(data=denorm_coords(labels[:, 1:], w, h), format='CXCYWH', canvas_size=(h,w))
+      bbox = BoundingBoxes(data=denorm_coords(labels[:, 1:]), format='CXCYWH', canvas_size=(h,w))
       image, labels[:, 1:] = self.transforms(image, bbox)
-      labels[:, 1:] = norm_coords(bbox, w, h)
+      labels[:, 1:] = norm_coords(bbox)
 
     # подготовка меток
     class_ids = labels[:, 0].to(torch.int32)
@@ -57,39 +57,98 @@ class SetNoob(data.Dataset):
     for i, ax in enumerate(labels): ax[10+class_ids[i]] = 1
 
     # создание сетки H_grid, W_grid и запись в оси X и Y сетки 
-    target=torch.zeros(7, 7, 5 * config.B + config.C)
+    target=torch.zeros(config.S, config.S, 5 * config.B + config.C)
     cell_x = torch.floor(labels[:, 0] * config.S).to(torch.int32) 
     cell_y = torch.floor(labels[:, 1] * config.S).to(torch.int32)
     target[cell_x, cell_y] = labels
 
     return image, target
 
-class BboxLoss_withMSE:
-  def __call__(self, pred, y): 
+class BboxLoss_withMSE(nn.Module):
+  def __init__(self): 
+    self.l_coord = 5
+    self.l_nooobj = 0.5
+    super().__init__()
+
+  def forward(self, p, y):
+    iou_b1 = get_iou(p[..., :4], y[..., :4])
+    iou_b2 = get_iou(p[..., 5:9], y[..., :4])
+
+    # print(f'b1:\n{p[..., :4]}')
+    # print(f'b2:\n{p[..., 5:9]}\n')
+    # print(f'iou_b1:\n{iou_b1}')
+    # print(f'iou_b2:\n{iou_b2}')
+
+    # main_box = torch.zeros((1, 7, 7, 5), device=p.device)
+    """
+    nomain_box = main_box.detach().clone()
+    for b in range(iou_b1.size(0)):
+      for s1 in range(iou_b1.size(1)):
+        for s2 in range(iou_b1.size(2)):
+          for v in range(iou_b1.size(3)):
+            if iou_b1[b, s1, s2, v] > iou_b2[b, s1, s2, v]:
+              main_box[b, s1, s2, :5] = p[b, s1, s2, :5] # bbox1 - main
+              nomain_box[b, s1, s2, :5] = p[b, s1, s2, 5:10] # bbox2 - no main
+            elif iou_b1[b, s1, s2, v] <= iou_b2[b, s1, s2, v]: 
+              main_box[b, s1, s2, :5] = p[b, s1, s2, 5:10] # bbox2 - main
+              nomain_box[b, s1, s2, :5] = p[b, s1, s2, :5] # bbox1 - no main
+    #box = torch.where(iou_b1 <= iou_b2, p[..., 5:10], p[..., :5])
+    """
+    main_box = torch.where(iou_b1 <= iou_b2, p[..., 5:10], p[..., :5])
+    nomain_box = torch.where(iou_b1 <= iou_b2, p[..., :5], p[..., 5:10])
+
+    #print(f'main box:\n{main_box}')
+
     mse_loss = nn.MSELoss(reduction='sum')
-    mse_none = nn.MSELoss(reduction='none')
-    cross_entropy_loss = nn.CrossEntropyLoss(reduction='none')
+    #XY
+    x_loss = mse_loss(
+      main_box[..., 0:1], 
+      y[..., 0:1]
+    )
+    y_loss = mse_loss(
+      main_box[..., 1:2], 
+      y[..., 1:2]
+    )
+    xy_loss = x_loss + y_loss
 
-    iou_bbox1 = IoU(pred[..., :4], y[..., :4]) #  [B, 7, 7, 1]
-    iou_bbox2 = IoU(pred[..., 5:9], y[..., :4]) # [B, 7, 7, 1]
-    bbox1 = torch.where(iou_bbox1 > iou_bbox2, pred[..., :5], pred[..., 5:10]) # [B, 7, 7, 5]
-    bbox2 = torch.where(iou_bbox2 > iou_bbox1, pred[..., :5], pred[..., 5:10]) # [B, 7, 7, 5]
-    bbox1 = torch.where(iou_bbox1 == iou_bbox2, pred[..., :5], bbox1)    
+    #WH
+    w_loss = mse_loss(
+      main_box[..., 2:3], 
+      y[..., 2:3]
+    )
+    h_loss = mse_loss(
+      main_box[..., 3:4], 
+      y[..., 3:4]
+    )
+    wh_loss = w_loss + h_loss
+    coord_loss = xy_loss + wh_loss 
 
-    coords_loss = (y[..., 4:5] * mse_none(bbox1[..., :4], y[..., :4])).sum()
-    obj_conf_loss = mse_loss(bbox1[..., 4:5], y[..., 4:5])
-    noobj_conf_loss = mse_loss(bbox2[..., 4:5], y[..., 9:10])
-    class_loss = (y[..., 4:5].squeeze(-1) * cross_entropy_loss(pred[..., 10:].permute(0, 3, 1, 2), y[..., 10:].permute(0, 3, 1, 2))).sum()
-
-    return (
-      5.0 * coords_loss +
-      1.0 * obj_conf_loss + 
-      0.5 * noobj_conf_loss + 
-      0.5 * class_loss
+    #obj confidence
+    obj_confidence_losse = mse_loss(
+      main_box[..., 4:5], 
+      torch.ones_like(iou_b1)
     )
 
-class ModelTrainer:
+    #no obg confidence
+    noobj_confidence_losse = mse_loss(
+      nomain_box[..., 4:5], 
+      torch.zeros_like(iou_b2)
+    )
+
+    #classification
+    cross = nn.CrossEntropyLoss(reduction='sum')
+    class_loss = cross(p[..., 10:config.C], y[..., 10:config.C])
+
+    total = self.l_coord * coord_loss \
+        + obj_confidence_losse \
+        + self.l_nooobj * noobj_confidence_losse \
+        + class_loss
+    return total
+
+
+class ModelTrainer(nn.Module):
   def __init__(self, model, train_set, val_set, test_set):
+    super().__init__()
     self.dev = 'cuda' if torch.cuda.is_available else 'cpu'
     self.model = model.to(self.dev)
     self.train_loader = data.DataLoader(dataset=train_set, batch_size=config.BATCH_SIZE, shuffle=True)
@@ -132,17 +191,16 @@ class ModelTrainer:
         data = data.to(self.dev)
         labels = labels.to(self.dev)
         predictions = self.model(data)
+        losses += self.criterion(predictions, labels).item()
 
-        detection_objects(data[0], predictions[0]) 
-        del data, labels
+        # detection_objects(data[0], predictions[0]) 
         break
 
     torch.save(self.model.state_dict(), 'weights.pth')
     
-    losses += self.criterion(predictions, labels).item()
     return losses / len(self.test_loader)
 
-  def fit(self):
+  def forward(self):
     #for x, y in self.train_loader: # отобразить изображение с рамками
       #x = utils.detection_objects(x[0], y[0])
       #utils.view_image('image', x)
@@ -157,10 +215,8 @@ class ModelTrainer:
       print(f'[{_ep}/{config.EPOCHS}]\tLOSS {train_meanloss}')
     self.model.eval()
 
-  def __call__(self): 
-    self.fit()
 
-def main():
+if __name__ == "__main__":
   transforms = v2.Compose([
     v2.Resize(config.IMAGE_SIZE),
     v2.ToImage(),
@@ -168,12 +224,9 @@ def main():
   ])
 
   trainer = ModelTrainer(
-    model=BACKBONEModel(3, 18), 
+    model=BACKBONEModel(3, 5 * config.B + config.C), 
     train_set=SetNoob("./", "kitti",train=True, transforms=transforms),
     val_set=SetNoob("./", "kitti",train=False, transforms=transforms),
     test_set=SetNoob("./", "kitti",train=False, transforms=transforms)); 
   trainer()
   print(f'общий показатель ошибки модели: {trainer.test()}')
-
-if __name__ == "__main__":
-  main()

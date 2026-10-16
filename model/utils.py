@@ -1,8 +1,9 @@
 #!/home/client/Documents/fun/venv/bin/python3
 import torch
 import cv2
+import config
 
-def IoU(bbox1, bbox2):
+def get_iou(bbox1, bbox2):
   box1 = cxcywh_to_xyxy(bbox1)
   box2 = cxcywh_to_xyxy(bbox2)
 
@@ -29,10 +30,12 @@ def IoU(bbox1, bbox2):
   union_area = area_box1 + area_box2 - intersection_area
   return intersection_area / (union_area + 1e-6)
 
-def denorm_coords(bbox, w, h): 
+def denorm_coords(bbox): 
+  w, h = config.IMAGE_SIZE
   return bbox * torch.tensor([w, h, w, h])
 
-def norm_coords(bbox, w, h): 
+def norm_coords(bbox): 
+  w, h = config.IMAGE_SIZE
   return bbox / torch.tensor([w, h, w, h])
 
 def cxcywh_to_xyxy(coords):
@@ -64,6 +67,7 @@ def view_image(name_img, img):
 
 def detection_objects(x, y, own_set_frame=False): 
   import det
+  
   if not own_set_frame:
     x = x.to('cpu')
     x = cv2.cvtColor(x.permute(1, 2, 0).numpy(), cv2.COLOR_RGB2BGR)
@@ -71,7 +75,7 @@ def detection_objects(x, y, own_set_frame=False):
   bboxes = extract_labels(y).to('cpu') # [H_grid, W_grid, preds]
   if bboxes.numel() == 0: return x 
   bboxes = cxcywh_to_xyxy(bboxes)
-  bboxes = denorm_coords(bboxes, det.W_image, det.H_image)
+  bboxes = denorm_coords(bboxes)
 
   for bbox in bboxes:  
     x_min = int(bbox[0].item()) 
