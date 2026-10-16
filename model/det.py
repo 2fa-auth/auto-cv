@@ -19,33 +19,32 @@ class SetNoob(data.Dataset):
     self.imgs_list = os.listdir(self.images)
     self.lbs_list = os.listdir(self.labels)
     self.transforms = transforms
-
+  
   def __len__(self): 
-    return len(self.imgs_list)    
+    return len(self.imgs_list)
   
   def __getitem__(self, index):
-    image=self.imgs_list[index]
+    # print(f'index = {index}')
+    # print(f'size img list = {len(self.imgs_list)}')
+
+    target_img=self.imgs_list[index]
     labels=[]
-    # парсинг label*.txt файла
     for label in self.lbs_list:
-      if label.split('.')[0] == image.split('.')[0]:
+      if label.split('.')[0] == target_img.split('.')[0]:
         with open(os.path.join(self.labels, label), "r") as f:
-          ts = f.read().split('\n') 
-          for t in ts: 
-            ar = []
-            for val in t.split(' '): 
-              if val != '': ar.append(float(val))
-            if ar: labels.append(ar)
+          for t in list(filter(None, f.read().split('\n'))): 
+            labels.append(list(map(float, t.split(' '))))
 
     labels = torch.tensor(labels)
-    image = Image.open(os.path.join(self.images,image)).convert('RGB')
-    w, h = image.size
-
+    image = Image.open(os.path.join(self.images,target_img)).convert('RGB')
     if self.transforms:
-      bbox = BoundingBoxes(data=denorm_coords(labels[:, 1:]), format='CXCYWH', canvas_size=(h,w))
+      bbox = BoundingBoxes(
+        data=denorm_coords(labels[:, 1:]), 
+        format='CXCYWH', 
+        canvas_size=tuple(reversed(image.size))
+      )
       image, labels[:, 1:] = self.transforms(image, bbox)
       labels[:, 1:] = norm_coords(bbox)
-
     # подготовка меток
     class_ids = labels[:, 0].to(torch.int32)
     labels=torch.cat([
@@ -66,26 +65,14 @@ class SetNoob(data.Dataset):
 
 class BboxLoss_withMSE(nn.Module):
   def __init__(self): 
+    super().__init__()
     self.l_coord = 5
     self.l_nooobj = 0.5
-    super().__init__()
 
   def forward(self, p, y):
     iou_b1 = get_iou(p[..., :4], y[..., :4])
     iou_b2 = get_iou(p[..., 5:9], y[..., :4])
-    """
-    nomain_box = main_box.detach().clone()
-    for b in range(iou_b1.size(0)):
-      for s1 in range(iou_b1.size(1)):
-        for s2 in range(iou_b1.size(2)):
-          for v in range(iou_b1.size(3)):
-            if iou_b1[b, s1, s2, v] > iou_b2[b, s1, s2, v]:
-              main_box[b, s1, s2, :5] = p[b, s1, s2, :5] # bbox1 - main
-              nomain_box[b, s1, s2, :5] = p[b, s1, s2, 5:10] # bbox2 - no main
-            elif iou_b1[b, s1, s2, v] <= iou_b2[b, s1, s2, v]: 
-              main_box[b, s1, s2, :5] = p[b, s1, s2, 5:10] # bbox2 - main
-              nomain_box[b, s1, s2, :5] = p[b, s1, s2, :5] # bbox1 - no main
-    """
+    
     main_box = torch.where(iou_b1 <= iou_b2, p[..., 5:10], p[..., :5])
     nomain_box = torch.where(iou_b1 <= iou_b2, p[..., :5], p[..., 5:10])
 
@@ -141,7 +128,7 @@ class ModelTrainer(nn.Module):
     super().__init__()
     self.dev = 'cuda' if torch.cuda.is_available else 'cpu'
     self.model = model.to(self.dev)
-    self.train_loader = data.DataLoader(dataset=train_set, batch_size=config.BATCH_SIZE, shuffle=True)
+    self.train_loader = data.DataLoader(dataset=train_set, batch_size=config.BATCH_SIZE, shuffle=False)
     self.val_loader = data.DataLoader(dataset=val_set, batch_size=config.BATCH_SIZE, shuffle=False)  
     self.test_loader = data.DataLoader(dataset=test_set, batch_size=config.BATCH_SIZE, shuffle=True)
     self.criterion = BboxLoss_withMSE()
@@ -158,7 +145,6 @@ class ModelTrainer(nn.Module):
       loss.backward()
       self.optimizer.step()
       losses += loss.item()
-      
       del data, labels
     return losses / len(self.train_loader)
 
@@ -170,7 +156,6 @@ class ModelTrainer(nn.Module):
         labels = labels.to(self.dev)
         predictions = self.model(data)
         losses += self.criterion(predictions, labels).item()
-        
         del data, labels
     return losses / len(self.val_loader)
   
@@ -182,7 +167,6 @@ class ModelTrainer(nn.Module):
         labels = labels.to(self.dev)
         predictions = self.model(data)
         losses += self.criterion(predictions, labels).item()
-
         # detection_objects(data[0], predictions[0]) 
         break
 

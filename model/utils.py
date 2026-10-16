@@ -4,31 +4,31 @@ import cv2
 import config
 
 def get_iou(bbox1, bbox2):
-  box1 = cxcywh_to_xyxy(bbox1)
-  box2 = cxcywh_to_xyxy(bbox2)
+  box1 = cxcywh_to_xyxy(bbox1) #[xmin,ymin,xmax,ymax] => [centerx,centery,w,h]
+  box2 = cxcywh_to_xyxy(bbox2) #[xmin,ymin,xmax,ymax] => [centerx,centery,w,h]
 
-  x1_box1 = torch.min(box1[..., 0:1], box1[..., 2:3])
-  y1_box1 = torch.min(box1[..., 1:2], box1[..., 3:4]) 
-  x2_box1 = torch.max(box1[..., 2:3], box1[..., 0:1])
-  y2_box1 = torch.max(box1[..., 3:4], box1[..., 1:2])
-  x1_box2 = torch.min(box2[..., 0:1], box2[..., 2:3])
-  y1_box2 = torch.min(box2[..., 1:2], box2[..., 3:4]) 
-  x2_box2 = torch.max(box2[..., 2:3], box2[..., 0:1])
-  y2_box2 = torch.max(box2[..., 3:4], box2[..., 1:2])
-  x1_box = torch.max(x1_box1, x1_box2)
-  y1_box = torch.max(y1_box1, y1_box2)
-  x2_box = torch.min(x2_box1, x2_box2)
-  y2_box = torch.min(y2_box1, y2_box2)
+  x1_box1 = torch.min(box1[..., 0:1],box1[..., 2:3])
+  y1_box1 = torch.min(box1[..., 1:2],box1[..., 3:4]) 
+  x2_box1 = torch.max(box1[..., 2:3],box1[..., 0:1])
+  y2_box1 = torch.max(box1[..., 3:4],box1[..., 1:2])
+  x1_box2 = torch.min(box2[..., 0:1],box2[..., 2:3])
+  y1_box2 = torch.min(box2[..., 1:2],box2[..., 3:4]) 
+  x2_box2 = torch.max(box2[..., 2:3],box2[..., 0:1])
+  y2_box2 = torch.max(box2[..., 3:4],box2[..., 1:2])
+  x1_box = torch.max(x1_box1,x1_box2)
+  y1_box = torch.max(y1_box1,y1_box2)
+  x2_box = torch.min(x2_box1,x2_box2)
+  y2_box = torch.min(y2_box1,y2_box2)
 
-  intersection_area = torch.clamp(x2_box - x1_box, 0) * torch.clamp(y2_box - y1_box, 0)
-  wbox1 = x2_box1 - x1_box1
-  hbox1 = y2_box1 - y1_box1
-  wbox2 = x2_box2 - x1_box2 
-  hbox2 = y2_box2 - y1_box2
-  area_box1 = wbox1 * hbox1
-  area_box2 = wbox2 * hbox2
-  union_area = area_box1 + area_box2 - intersection_area
-  return intersection_area / (union_area + 1e-6)
+  intersection_area = torch.clamp(x2_box-x1_box,0) * torch.clamp(y2_box-y1_box,0)
+  wbox1 = x2_box1-x1_box1
+  hbox1 = y2_box1-y1_box1
+  wbox2 = x2_box2-x1_box2 
+  hbox2 = y2_box2-y1_box2
+  area_box1 = wbox1*hbox1
+  area_box2 = wbox2*hbox2
+  union_area = area_box1+area_box2-intersection_area
+  return intersection_area / (union_area+1e-6)
 
 def denorm_coords(bbox): 
   w, h = config.IMAGE_SIZE
@@ -67,12 +67,11 @@ def view_image(name_img, img):
 
 def detection_objects(x, y, own_set_frame=False): 
   import det
-  
   if not own_set_frame:
     x = x.to('cpu')
     x = cv2.cvtColor(x.permute(1, 2, 0).numpy(), cv2.COLOR_RGB2BGR)
   
-  bboxes = extract_labels(y).to('cpu') # [H_grid, W_grid, preds]
+  bboxes = extract_labels(y).to('cpu')
   if bboxes.numel() == 0: return x 
   bboxes = cxcywh_to_xyxy(bboxes)
   bboxes = denorm_coords(bboxes)
@@ -88,4 +87,7 @@ def detection_objects(x, y, own_set_frame=False):
 # сортирует bbox по x1 
 def sort_by_x1(target):
   indices = torch.argsort(target[..., 0])
-  return torch.gather(input=target, dim=1, index=indices.unsqueeze(-1).expand_as(target))
+  return torch.gather(
+    input=target, 
+    dim=1, 
+    index=indices.unsqueeze(-1).expand_as(target))
