@@ -2,7 +2,7 @@ NAME_DATASET = "kitti"
 PATH_TO_DATASET = "./"
 
 BATCH_SIZE = 1
-EPOCHS = 2
+EPOCHS = 30
 LEARNING_RATE = 1E-4
 
 IMAGE_SIZE = (448, 448) # все изображения приравниваются к единому размеру
