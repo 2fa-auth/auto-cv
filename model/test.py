@@ -38,7 +38,7 @@ def test_frame(path, trans, model=None):
   frame = cv2.imread(path)
   frame = cv2.resize(frame, config.IMAGE_SIZE, interpolation=cv2.INTER_AREA)   
   frame = trans(torch.tensor(np.expand_dims(frame, axis=0).transpose(0, 3, 1, 2)))
-  pred = model(frame.to(dev())).to('cpu').squeeze()
+  pred = model(frame.to(dev)).to('cpu').squeeze()
   
   frame = cv2.cvtColor(
     frame.to('cpu').permute(0, 2, 3, 1).squeeze().detach().numpy(), 
@@ -49,9 +49,9 @@ def test_frame(path, trans, model=None):
 
 if __name__ == "__main__":
   dev = 'cuda' if torch.cuda.is_available() else 'cpu'
-  model = BACKBONEModel(3, 18).to(dev)
-  model.load_state_dict(torch.load('loss_is_4.pth', map_location=dev, weights_only=True))
+  model = BACKBONEModel(3, 5 * 2 + config.C).to(dev)
+  model.load_state_dict(torch.load('weights.pth', map_location=dev, weights_only=True))
   trans = v2.ToDtype(torch.float32, scale=True)
 
-  test_frames(cv2.VideoCapture('mp4/drive_test1.mp4'), trans, model=model)
-  # test_frame('test_img.png', trans, model=model)
+  test_frame('test_img.png', trans, model=model)
+  # test_frames(cv2.VideoCapture('mp4/drive_test1.mp4'), trans, model=model)
