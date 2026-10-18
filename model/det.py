@@ -1,42 +1,42 @@
 #!/home/client/Documents/fun/venv/bin/python3
-import os
+from os import path, listdir, cpu_count
 from PIL import Image 
 import torch
 from torch.optim import AdamW
 from torchvision.tv_tensors import BoundingBoxes
-import torch.utils.data as data
+from torch.utils.data import Dataset, DataLoader
 import torchvision.transforms.v2 as v2
 import torch.nn as nn
-
 from utils import denorm_coords, norm_coords, get_iou, detection_objects
 from backbone import BACKBONEModel
 import config
 
-class SetNoob(data.Dataset):
+class SetNoob(Dataset):
   def __init__(self, pathto_dset, namedset, train=True, transforms=None):
-    self.images = os.path.join(pathto_dset, namedset, "images", "train" if train else "val")
-    self.labels = os.path.join(pathto_dset, namedset, "labels", "train" if train else "val")
-    self.imgs_list = os.listdir(self.images)
-    self.lbs_list = os.listdir(self.labels)
+    self.images = path.join(pathto_dset, namedset, "images", "train" if train else "val")
+    self.labels = path.join(pathto_dset, namedset, "labels", "train" if train else "val")
+    self.imgs_list = listdir(self.images)
+    self.lbs_list = listdir(self.labels)
     self.transforms = transforms
   
   def __len__(self): 
     return len(self.imgs_list)
   
   def __getitem__(self, index):
-    # print(f'index = {index}')
-    # print(f'size img list = {len(self.imgs_list)}')
-
     target_img=self.imgs_list[index]
     labels=[]
+    # нахождение соответствующего label файл и парсинг
     for label in self.lbs_list:
       if label.split('.')[0] == target_img.split('.')[0]:
-        with open(os.path.join(self.labels, label), "r") as f:
-          for t in list(filter(None, f.read().split('\n'))): 
-            labels.append(list(map(float, t.split(' '))))
-
+        with open(path.join(self.labels, label), "r") as f:
+          for t in list(filter(None, f.read().split('\n'))):
+            plbl = list(map(float, t.split(' '))) 
+            for i in range(len(plbl)-1): 
+              if plbl[i+1] > 1.0: plbl = 0; break
+            if plbl and plbl[0] == 0.: labels.append(plbl)
+    # трансформация 
     labels = torch.tensor(labels)
-    image = Image.open(os.path.join(self.images,target_img)).convert('RGB')
+    image = Image.open(path.join(self.images,target_img)).convert('RGB')
     if self.transforms:
       bbox = BoundingBoxes(
         data=denorm_coords(labels[:, 1:]), 
@@ -45,6 +45,7 @@ class SetNoob(data.Dataset):
       )
       image, labels[:, 1:] = self.transforms(image, bbox)
       labels[:, 1:] = norm_coords(bbox)
+
     # подготовка меток
     class_ids = labels[:, 0].to(torch.int32)
     labels=torch.cat([
@@ -55,10 +56,11 @@ class SetNoob(data.Dataset):
       config.C)], dim=1)[:, 1:]
     for i, ax in enumerate(labels): ax[10+class_ids[i]] = 1
 
-    # создание сетки H_grid, W_grid и запись в оси X и Y сетки 
+    # создание сетки H_grid, W_grid и запись в оси  
     target=torch.zeros(config.S, config.S, 5 * config.B + config.C)
     cell_x = torch.floor(labels[:, 0] * config.S).to(torch.int32) 
     cell_y = torch.floor(labels[:, 1] * config.S).to(torch.int32)
+
     target[cell_x, cell_y] = labels
 
     return image, target
@@ -118,9 +120,9 @@ class BboxLoss_withMSE(nn.Module):
     class_loss = cross(p[..., 10:config.C], y[..., 10:config.C])
 
     return self.l_coord * coord_loss \
-        + obj_confidence_losse \
-        + self.l_nooobj * noobj_confidence_losse \
-        + class_loss
+      + obj_confidence_losse \
+      + self.l_nooobj * noobj_confidence_losse \
+      + class_loss
 
 
 class ModelTrainer(nn.Module):
@@ -128,17 +130,42 @@ class ModelTrainer(nn.Module):
     super().__init__()
     self.dev = 'cuda' if torch.cuda.is_available else 'cpu'
     self.model = model.to(self.dev)
-    self.train_loader = data.DataLoader(dataset=train_set, batch_size=config.BATCH_SIZE, shuffle=False)
-    self.val_loader = data.DataLoader(dataset=val_set, batch_size=config.BATCH_SIZE, shuffle=False)  
-    self.test_loader = data.DataLoader(dataset=test_set, batch_size=config.BATCH_SIZE, shuffle=True)
+    
+    num_processors = cpu_count() # ядер процессора
+    self.train_loader = DataLoader(
+      dataset=train_set, 
+      batch_size=config.BATCH_SIZE, 
+      shuffle=False, 
+      num_workers=num_processors,
+      pin_memory=True,
+      persistent_workers=True,
+    )
+    self.val_loader = DataLoader(
+      dataset=val_set, 
+      batch_size=config.BATCH_SIZE, 
+      shuffle=False,
+      num_workers=num_processors,
+      pin_memory=True,
+      persistent_workers=True
+    )  
+    self.test_loader = DataLoader(
+      dataset=test_set, 
+      batch_size=config.BATCH_SIZE, 
+      shuffle=True,
+      num_workers=num_processors,
+      pin_memory=True,
+      persistent_workers=True,
+    )
     self.criterion = BboxLoss_withMSE()
     self.optimizer = AdamW(params=self.model.parameters(), lr=config.LEARNING_RATE, weight_decay=1e-4)
   
   def train(self):
     losses = 0
     for data, labels in self.train_loader:
+      # благодаря pin_memory=true, этот перенос (.to) сработает максимально быстро
       data = data.to(self.dev)
       labels = labels.to(self.dev)
+
       predictions = self.model(data)
       loss = self.criterion(predictions, labels)
       self.optimizer.zero_grad()
@@ -154,6 +181,7 @@ class ModelTrainer(nn.Module):
       for data, labels in self.val_loader:
         data = data.to(self.dev)
         labels = labels.to(self.dev)
+
         predictions = self.model(data)
         losses += self.criterion(predictions, labels).item()
         del data, labels
@@ -165,6 +193,7 @@ class ModelTrainer(nn.Module):
       for data ,labels in self.test_loader:
         data = data.to(self.dev)
         labels = labels.to(self.dev)
+
         predictions = self.model(data)
         losses += self.criterion(predictions, labels).item()
         # detection_objects(data[0], predictions[0]) 
@@ -199,8 +228,8 @@ if __name__ == "__main__":
 
   trainer = ModelTrainer(
     model=BACKBONEModel(3, 5 * config.B + config.C), 
-    train_set=SetNoob("./", "kitti",train=True, transforms=transforms),
-    val_set=SetNoob("./", "kitti",train=False, transforms=transforms),
-    test_set=SetNoob("./", "kitti",train=False, transforms=transforms)); 
+    train_set=SetNoob(config.PATH_TO_DATASET, config.NAME_DATASET,train=True, transforms=transforms),
+    val_set=SetNoob(config.PATH_TO_DATASET, config.NAME_DATASET,train=False, transforms=transforms),
+    test_set=SetNoob(config.PATH_TO_DATASET, config.NAME_DATASET,train=False, transforms=transforms)); 
   trainer()
   print(f'общий показатель ошибки модели: {trainer.test()}')

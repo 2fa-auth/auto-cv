@@ -4,8 +4,8 @@ import cv2
 import config
 
 def get_iou(bbox1, bbox2):
-  box1 = cxcywh_to_xyxy(bbox1) #[xmin,ymin,xmax,ymax] => [centerx,centery,w,h]
-  box2 = cxcywh_to_xyxy(bbox2) #[xmin,ymin,xmax,ymax] => [centerx,centery,w,h]
+  box1 = cxcywh_to_xyxy(bbox1) #[centerx,centery,w,h]=>[xmin,ymin,xmax,ymax]
+  box2 = cxcywh_to_xyxy(bbox2) #[centerx,centery,w,h]=>[xmin,ymin,xman,ymax]
 
   x1_box1 = torch.min(box1[..., 0:1],box1[..., 2:3])
   y1_box1 = torch.min(box1[..., 1:2],box1[..., 3:4]) 
