@@ -1,1 +1,0 @@
-![asd](images/exmpl.png)

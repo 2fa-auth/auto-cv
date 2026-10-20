@@ -4,9 +4,10 @@ import cv2
 import config
 
 def get_iou(bbox1, bbox2):
+  """методы возвращают копию"""
   box1 = cxcywh_to_xyxy(bbox1) #[centerx,centery,w,h]=>[xmin,ymin,xmax,ymax]
   box2 = cxcywh_to_xyxy(bbox2) #[centerx,centery,w,h]=>[xmin,ymin,xman,ymax]
-
+  
   x1_box1 = torch.min(box1[..., 0:1],box1[..., 2:3])
   y1_box1 = torch.min(box1[..., 1:2],box1[..., 3:4]) 
   x2_box1 = torch.max(box1[..., 2:3],box1[..., 0:1])
@@ -53,14 +54,19 @@ def cxcywh_to_xyxy(coords):
 def extract_labels(grid, bbox=True): 
   tlist=[]
 
-  # print(grid[..., :4])
-  # print(grid[..., 5:9])
-  # exit()
   for ax1 in grid:
     for preds in ax1:
-      # print(torch.sigmoid(preds[4]))
-      if preds[4] <= 0.5: continue # индекс 4 - confidence
-      tlist.append((preds[:4] if bbox else preds))
+      # выбор ответственной рамки из двух предсказаний в одной ячейке
+      bbox1 = preds[:5]  # [5]
+      bbox2 = preds[5:10] # [5]
+      # print(bbox1)
+      # print(bbox2)
+      main_bbox = bbox1 if bbox1[4] > bbox2[4] else bbox2
+      # print(main_bbox)
+      # exit()
+      
+      if main_bbox[4] <= 0.5: continue # индекс 4 - confidence
+      tlist.append((main_bbox[:4] if bbox else preds))
 
   if tlist: return torch.stack([t for t in tlist if t.numel() > 0], 0)
   else: return torch.tensor([])
@@ -71,15 +77,16 @@ def view_image(name_img, img):
   cv2.destroyAllWindows()
 
 def detection_objects(x, y, own_set_frame=False): 
-  import det
   if not own_set_frame:
     x = x.to('cpu')
     x = cv2.cvtColor(x.permute(1, 2, 0).numpy(), cv2.COLOR_RGB2BGR)
   
   bboxes = extract_labels(y).to('cpu')
-  if bboxes.numel() == 0: return x 
+  if bboxes.numel() == 0:
+    print(f'НА ИЗОБРАЖЕНИИ НЕТ МЕТОК')
+    return x 
   bboxes = cxcywh_to_xyxy(bboxes)
-  bboxes = denorm_coords(bboxes)
+  bboxes = denorm_coords(bboxes) # не работает. 
 
   for bbox in bboxes:  
     x_min = int(bbox[0].item()) 

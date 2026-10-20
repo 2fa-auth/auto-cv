@@ -6,19 +6,13 @@ import torch
 from torch.optim import AdamW
 from torchvision.tv_tensors import BoundingBoxes
 from torch.utils.data import Dataset, DataLoader
-import torchvision.transforms.v2 as v2
+import torchvision.transforms.v2 as V2
 import torch.nn as nn
 
-from utils import (
-    denorm_coords, 
-    norm_coords, 
-    get_iou, 
-    detection_objects, 
-    view_image,
-  )
-import model
+from loss import BboxLoss_withMSE
+from utils import denorm_coords, norm_coords, detection_objects, view_image
+from model import FastResidualDetector
 import config
-
 
 class SetNoob(Dataset):
   def __init__(self, pathto_dset, namedset, train=True, transforms=None):
@@ -27,14 +21,14 @@ class SetNoob(Dataset):
     self.imgs_list = listdir(self.images)
     self.lbs_list = listdir(self.labels)
     self.transforms = transforms
-  
+
   def __len__(self): 
     return len(self.imgs_list)
   
   def __getitem__(self, index):
     target_img=self.imgs_list[index]
     labels=[]
-    # нахождение соответствующего label файл и парсинг
+    
     for label in self.lbs_list:
       if label.split('.')[0] == target_img.split('.')[0]:
         with open(path.join(self.labels, label), "r") as f:
@@ -43,7 +37,7 @@ class SetNoob(Dataset):
             for i in range(len(plbl)-1): 
               if plbl[i+1] > 1.0: plbl = 0; break
             if plbl and plbl[0] == 0.: labels.append(plbl)
-    # трансформация 
+    
     labels = torch.tensor(labels)
     image = Image.open(path.join(self.images,target_img)).convert('RGB')
 
@@ -55,8 +49,7 @@ class SetNoob(Dataset):
       )
       image, labels[:, 1:] = self.transforms(image, bbox)
       labels[:, 1:] = norm_coords(bbox)
-    
-    # подготовка меток
+
     class_ids = labels[:, 0].to(torch.int32)
     labels=torch.cat([
       labels,
@@ -64,107 +57,54 @@ class SetNoob(Dataset):
       torch.zeros_like(labels),
       torch.zeros(labels.size(0),
       config.C)], dim=1)[:, 1:]
-    
     labels[..., 10+class_ids]=1 # [N, P * B + C]
     
-    # создание сетки (S) и запись в оси  
     target = torch.zeros(config.S, config.S, 5 * config.B + config.C)
 
-    target[
-      torch.floor(labels[:, 0] * config.S).to(torch.int32), # X
-      torch.floor(labels[:, 1] * config.S).to(torch.int32)  # Y
-    ] = labels
+    cell_x = torch.floor(labels[:, 0] * config.S).to(torch.int32)
+    cell_y = torch.floor(labels[:, 1] * config.S).to(torch.int32)
+
+    target[cell_x, cell_y] = labels
+
+    # for i in range(target.size(0)): # [i, S, P]
+      # for j in range(target.size(1)): # [S, j, P]
+        # print(target[i, j, :])
+      # print()
 
     return image, target
 
 
-class BboxLoss_withMSE(nn.Module):
-  def __init__(self): 
-    super().__init__()
-
-  def forward(self, p, y):
-    iou_b1 = get_iou(p[..., :4], y[..., :4]) # [B, S, S, 1]
-    iou_b2 = get_iou(p[..., 5:9], y[..., :4]) # [B, S, S, 1]
-
-    main_box = torch.where(iou_b1 <= iou_b2, p[..., 5:10], p[..., :5]) # [B, S, S, 4]
-    nomain_box = torch.where(iou_b1 <= iou_b2, p[..., :5], p[..., 5:10]) # [B, S, S, 4]
-
-    #Xcenter, Ycenter
-    mask = y[..., 4:5]
-    x_loss = (
-      (mask * (main_box[..., 0:1]-y[..., 0:1])).pow(2)
-    ).sum()
-    y_loss = (
-      (mask * (main_box[..., 1:2]-y[..., 1:2])).pow(2)
-    ).sum()
-    #Width, Height
-    w_loss = (
-      (mask * (main_box[..., 2:3]-y[..., 2:3])).pow(2)
-    ).sum()
-    h_loss = (
-      (mask * (main_box[..., 3:4]-y[..., 3:4])).pow(2)
-    ).sum()
-
-    coord_loss = x_loss+y_loss+w_loss+h_loss 
-
-    #объект есть в ячейке
-    obj_confidence_loss = (
-      mask * (main_box[..., 4:5] - get_iou(main_box[..., :4], y[..., :4]).detach()).pow(2)
-    ).sum()
-
-    #объекта нет в ячейке
-    noobj_confidence_loss = (
-      mask * nomain_box[..., 4:5].pow(2)
-      + (1 - mask) * main_box[..., 4:5].pow(2)
-      + (1 - mask) * nomain_box[..., 4:5].pow(2)
-    ).sum()
-
-    # классификация
-    cross = nn.CrossEntropyLoss(reduction='none')
-    class_loss = ((
-      cross(
-        p[..., 10:10+config.C].reshape(-1, config.C), 
-        y[..., 10:10+config.C].reshape(-1, config.C)
-        )) * mask.reshape(-1)
-    ).sum()
-
-    total = 5 * coord_loss \
-      + obj_confidence_loss \
-      + 0.5 * noobj_confidence_loss \
-      + class_loss
-    
-    return total
-
 class ModelTrainer(nn.Module):
   def __init__(self, model, train_set, val_set, test_set):
     super().__init__()
+
     self.dev = 'cuda' if torch.cuda.is_available else 'cpu'
     self.model = model.to(self.dev)
     
-    num_processors = cpu_count() # ядер процессора
+    num_processors = cpu_count()
     self.train_loader = DataLoader(
       dataset=train_set, 
       batch_size=config.BATCH_SIZE, 
       shuffle=False, 
-      # num_workers=num_processors,
-      # pin_memory=True,
-      # persistent_workers=True,
+      num_workers=num_processors,
+      pin_memory=True,
+      persistent_workers=True,
     )
     self.val_loader = DataLoader(
       dataset=val_set, 
       batch_size=config.BATCH_SIZE, 
       shuffle=False,
-      # num_workers=num_processors,
-      # pin_memory=True,
-      # persistent_workers=True
+      num_workers=num_processors,
+      pin_memory=True,
+      persistent_workers=True
     )  
     self.test_loader = DataLoader(
       dataset=test_set,
       batch_size=config.BATCH_SIZE, 
       shuffle=True,
-      # num_workers=num_processors,
-      # pin_memory=True,
-      # persistent_workers=True,
+      num_workers=num_processors,
+      pin_memory=True,
+      persistent_workers=True,
     )
     self.criterion = BboxLoss_withMSE()
     self.optimizer = AdamW(params=self.model.parameters(), lr=config.LEARNING_RATE, weight_decay=1e-4)
@@ -173,8 +113,8 @@ class ModelTrainer(nn.Module):
     losses = 0
     for data, labels in self.train_loader:
       # благодаря pin_memory, перенос (.to) сработает максимально быстро
-      data = data.to(self.dev)
-      labels = labels.to(self.dev)
+      data = data.to(self.dev, non_blocking=True)
+      labels = labels.to(self.dev, non_blocking=True)
       predictions = self.model(data)
       loss = self.criterion(predictions, labels)
       self.optimizer.zero_grad()
@@ -203,9 +143,15 @@ class ModelTrainer(nn.Module):
         labels = labels.to(self.dev)
         predictions = self.model(data)
         losses += self.criterion(predictions, labels).item()
-        x = detection_objects(data[0], predictions[0]) 
-        view_image('asd', x)
-        break
+
+        # print(f'labels 1:\n{labels[0][1]}')
+        # print(f'labels 2:\n{labels[0][2]}\n')
+        
+        # print(f'pred 1:\n{predictions[0][1]}')
+        # print(f'pred 2:\n{predictions[0][2]}\n')
+        # x = detection_objects(data[0], predictions[0]) 
+        # view_image('asd', x)
+        # break
 
     torch.save(self.model.state_dict(), 'weights.pth')
     return losses / len(self.test_loader)
@@ -227,14 +173,14 @@ class ModelTrainer(nn.Module):
 
 
 if __name__ == "__main__":
-  transforms = v2.Compose([
-    v2.Resize(config.IMAGE_SIZE),
-    v2.ToImage(),
-    v2.ToDtype(torch.float32, scale=True),
+  transforms = V2.Compose([
+    V2.Resize(config.IMAGE_SIZE),
+    V2.ToImage(),
+    V2.ToDtype(torch.float32, scale=True),
   ])
 
   trainer = ModelTrainer(
-    model = model.FastResidualDetector(
+    model = FastResidualDetector(
       in_chan=3,
       out_features=5 * config.B + config.C
     ),

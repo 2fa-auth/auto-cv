@@ -1,8 +1,8 @@
-NAME_DATASET = "Intersection-Flow-5K_d"
+NAME_DATASET = "Intersection-Flow-5K"
 PATH_TO_DATASET = "./"
 
 BATCH_SIZE = 64
-EPOCHS = 135
+EPOCHS = 50
 LEARNING_RATE = 1E-4
 
 IMAGE_SIZE = (448, 448) # все изображения приравниваются к единому размеру
