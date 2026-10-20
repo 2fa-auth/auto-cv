@@ -52,10 +52,15 @@ def cxcywh_to_xyxy(coords):
 
 def extract_labels(grid, bbox=True): 
   tlist=[]
+
+  # print(grid[..., :4])
+  # print(grid[..., 5:9])
+  # exit()
   for ax1 in grid:
     for preds in ax1:
-      if torch.round(preds[4]) <= 0: continue # индекс 4 - confidence
-      else: tlist.append((preds[:4] if bbox else preds))
+      # print(torch.sigmoid(preds[4]))
+      if preds[4] <= 0.5: continue # индекс 4 - confidence
+      tlist.append((preds[:4] if bbox else preds))
 
   if tlist: return torch.stack([t for t in tlist if t.numel() > 0], 0)
   else: return torch.tensor([])
@@ -81,7 +86,14 @@ def detection_objects(x, y, own_set_frame=False):
     y_min = int(bbox[1].item()) 
     x_max = int(bbox[2].item()) 
     y_max = int(bbox[3].item()) 
-    cv2.rectangle(x, (x_min, y_min), (x_max, y_max), (0, 255, 255), 2)
+    cv2.rectangle(
+      x, 
+      (x_min, y_min), # p1
+      (x_max, y_max), # p2
+      (0, 255, 255),  # color rect
+      2,              
+    )
+
   return x
 
 # сортирует bbox по x1 

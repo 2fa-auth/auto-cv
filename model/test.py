@@ -1,6 +1,6 @@
 #!/home/client/Documents/fun/venv/bin/python3
 import cv2
-from backbone import BACKBONEModel
+import model
 import torch
 import numpy as np
 import torchvision.transforms.v2 as v2
@@ -49,9 +49,10 @@ def test_frame(path, trans, model=None):
 
 if __name__ == "__main__":
   dev = 'cuda' if torch.cuda.is_available() else 'cpu'
-  model = BACKBONEModel(3, 5 * 2 + config.C).to(dev)
+  model = model.FastResidualDetector(3, 5 * 2 + config.C).to(dev)
   model.load_state_dict(torch.load('weights.pth', map_location=dev, weights_only=True))
+  model.eval()
   trans = v2.ToDtype(torch.float32, scale=True)
 
-  test_frame('test_img.png', trans, model=model)
   # test_frames(cv2.VideoCapture('mp4/drive_test1.mp4'), trans, model=model)
+  test_frame('test_img.jpg', trans, model=model)

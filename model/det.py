@@ -1,12 +1,14 @@
 #!/home/client/Documents/fun/venv/bin/python3
 from os import path, listdir, cpu_count
 from PIL import Image 
+
 import torch
 from torch.optim import AdamW
 from torchvision.tv_tensors import BoundingBoxes
 from torch.utils.data import Dataset, DataLoader
 import torchvision.transforms.v2 as v2
 import torch.nn as nn
+
 from utils import (
     denorm_coords, 
     norm_coords, 
@@ -14,8 +16,9 @@ from utils import (
     detection_objects, 
     view_image,
   )
-from backbone import BACKBONEModel
+import model
 import config
+
 
 class SetNoob(Dataset):
   def __init__(self, pathto_dset, namedset, train=True, transforms=None):
@@ -43,6 +46,7 @@ class SetNoob(Dataset):
     # трансформация 
     labels = torch.tensor(labels)
     image = Image.open(path.join(self.images,target_img)).convert('RGB')
+
     if self.transforms:
       bbox = BoundingBoxes(
         data=denorm_coords(labels[:, 1:]), 
@@ -60,30 +64,32 @@ class SetNoob(Dataset):
       torch.zeros_like(labels),
       torch.zeros(labels.size(0),
       config.C)], dim=1)[:, 1:]
-    for i, ax in enumerate(labels): ax[10+class_ids[i]] = 1
+    
+    labels[..., 10+class_ids]=1 # [N, P * B + C]
+    
+    # создание сетки (S) и запись в оси  
+    target = torch.zeros(config.S, config.S, 5 * config.B + config.C)
 
-    # создание сетки H_grid, W_grid и запись в оси  
-    target=torch.zeros(config.S, config.S, 5 * config.B + config.C)
-    cell_x = torch.floor(labels[:, 0] * config.S).to(torch.int32) 
-    cell_y = torch.floor(labels[:, 1] * config.S).to(torch.int32)
-
-    target[cell_x, cell_y] = labels
+    target[
+      torch.floor(labels[:, 0] * config.S).to(torch.int32), # X
+      torch.floor(labels[:, 1] * config.S).to(torch.int32)  # Y
+    ] = labels
 
     return image, target
+
 
 class BboxLoss_withMSE(nn.Module):
   def __init__(self): 
     super().__init__()
-    self.l_coord = 5
-    self.l_nooobj = 0.5
 
   def forward(self, p, y):
-    iou_b1 = get_iou(p[..., :4], y[..., :4])
-    iou_b2 = get_iou(p[..., 5:9], y[..., :4])
+    iou_b1 = get_iou(p[..., :4], y[..., :4]) # [B, S, S, 1]
+    iou_b2 = get_iou(p[..., 5:9], y[..., :4]) # [B, S, S, 1]
 
-    main_box = torch.where(iou_b1 <= iou_b2, p[..., 5:10], p[..., :5])
-    nomain_box = torch.where(iou_b1 <= iou_b2, p[..., :5], p[..., 5:10])
+    main_box = torch.where(iou_b1 <= iou_b2, p[..., 5:10], p[..., :5]) # [B, S, S, 4]
+    nomain_box = torch.where(iou_b1 <= iou_b2, p[..., :5], p[..., 5:10]) # [B, S, S, 4]
 
+    #Xcenter, Ycenter
     mask = y[..., 4:5]
     x_loss = (
       (mask * (main_box[..., 0:1]-y[..., 0:1])).pow(2)
@@ -91,18 +97,22 @@ class BboxLoss_withMSE(nn.Module):
     y_loss = (
       (mask * (main_box[..., 1:2]-y[..., 1:2])).pow(2)
     ).sum()
+    #Width, Height
     w_loss = (
       (mask * (main_box[..., 2:3]-y[..., 2:3])).pow(2)
     ).sum()
     h_loss = (
       (mask * (main_box[..., 3:4]-y[..., 3:4])).pow(2)
     ).sum()
-    coord_loss = x_loss + y_loss + w_loss + h_loss 
 
+    coord_loss = x_loss+y_loss+w_loss+h_loss 
+
+    #объект есть в ячейке
     obj_confidence_loss = (
       mask * (main_box[..., 4:5] - get_iou(main_box[..., :4], y[..., :4]).detach()).pow(2)
     ).sum()
 
+    #объекта нет в ячейке
     noobj_confidence_loss = (
       mask * nomain_box[..., 4:5].pow(2)
       + (1 - mask) * main_box[..., 4:5].pow(2)
@@ -118,11 +128,12 @@ class BboxLoss_withMSE(nn.Module):
         )) * mask.reshape(-1)
     ).sum()
 
-    return self.l_coord * coord_loss \
+    total = 5 * coord_loss \
       + obj_confidence_loss \
-      + self.l_nooobj * noobj_confidence_loss \
+      + 0.5 * noobj_confidence_loss \
       + class_loss
-
+    
+    return total
 
 class ModelTrainer(nn.Module):
   def __init__(self, model, train_set, val_set, test_set):
@@ -134,26 +145,26 @@ class ModelTrainer(nn.Module):
     self.train_loader = DataLoader(
       dataset=train_set, 
       batch_size=config.BATCH_SIZE, 
-      shuffle=True, 
-      num_workers=num_processors,
-      pin_memory=True,
-      persistent_workers=True,
+      shuffle=False, 
+      # num_workers=num_processors,
+      # pin_memory=True,
+      # persistent_workers=True,
     )
     self.val_loader = DataLoader(
       dataset=val_set, 
       batch_size=config.BATCH_SIZE, 
       shuffle=False,
-      num_workers=num_processors,
-      pin_memory=True,
-      persistent_workers=True
+      # num_workers=num_processors,
+      # pin_memory=True,
+      # persistent_workers=True
     )  
     self.test_loader = DataLoader(
       dataset=test_set,
       batch_size=config.BATCH_SIZE, 
       shuffle=True,
-      num_workers=num_processors,
-      pin_memory=True,
-      persistent_workers=True,
+      # num_workers=num_processors,
+      # pin_memory=True,
+      # persistent_workers=True,
     )
     self.criterion = BboxLoss_withMSE()
     self.optimizer = AdamW(params=self.model.parameters(), lr=config.LEARNING_RATE, weight_decay=1e-4)
@@ -192,17 +203,18 @@ class ModelTrainer(nn.Module):
         labels = labels.to(self.dev)
         predictions = self.model(data)
         losses += self.criterion(predictions, labels).item()
-        # detection_objects(data[0], predictions[0]) 
+        x = detection_objects(data[0], predictions[0]) 
+        view_image('asd', x)
         break
 
     torch.save(self.model.state_dict(), 'weights.pth')
     return losses / len(self.test_loader)
 
   def forward(self):
-    for x, y in self.train_loader: # отобразить изображение с рамками
-      x = detection_objects(x[0], y[0])
-      view_image('image', x)
-      exit()  
+    # for x, y in self.train_loader: # отобразить изображение с рамками
+      # x = detection_objects(x[0], y[0])
+      # view_image('image', x)
+      # exit()  
     self.model.train()
     for _ep in range(config.EPOCHS):
       # self.model.train()
@@ -222,9 +234,12 @@ if __name__ == "__main__":
   ])
 
   trainer = ModelTrainer(
-    model=BACKBONEModel(3, 5 * config.B + config.C), 
-    train_set=SetNoob(config.PATH_TO_DATASET, config.NAME_DATASET,train=True, transforms=transforms),
-    val_set=SetNoob(config.PATH_TO_DATASET, config.NAME_DATASET,train=False, transforms=transforms),
-    test_set=SetNoob(config.PATH_TO_DATASET, config.NAME_DATASET,train=False, transforms=transforms)); 
+    model = model.FastResidualDetector(
+      in_chan=3,
+      out_features=5 * config.B + config.C
+    ),
+    train_set=SetNoob(config.PATH_TO_DATASET, config.NAME_DATASET, train=True, transforms=transforms),
+    val_set=SetNoob(config.PATH_TO_DATASET, config.NAME_DATASET, train=True, transforms=transforms),
+    test_set=SetNoob(config.PATH_TO_DATASET, config.NAME_DATASET, train=True, transforms=transforms)); 
   trainer()
   print(f'общий показатель ошибки модели: {trainer.test()}')
