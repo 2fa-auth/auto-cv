@@ -45,7 +45,7 @@ class SetNoob(Dataset):
       bbox = BoundingBoxes(
         data=denorm_coords(labels[:, 1:]), 
         format='CXCYWH', 
-        canvas_size=tuple(reversed(image.size))
+        canvas_size=config.IMAGE_SIZE
       )
       image, labels[:, 1:] = self.transforms(image, bbox)
       labels[:, 1:] = norm_coords(bbox)
@@ -64,7 +64,7 @@ class SetNoob(Dataset):
     cell_x = torch.floor(labels[:, 0] * config.S).to(torch.int32)
     cell_y = torch.floor(labels[:, 1] * config.S).to(torch.int32)
 
-    target[cell_x, cell_y] = labels
+    target[cell_y, cell_x] = labels
 
     # for i in range(target.size(0)): # [i, S, P]
       # for j in range(target.size(1)): # [S, j, P]
